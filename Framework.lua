@@ -1,20 +1,6 @@
 local FRAMEWORK_NAME = "No comment"
 local VERSION = "1.0.0"
 
--- Only reuse the cached framework if its GUI is still actually alive.
--- Previously this returned the stale table unconditionally, so after the
--- menu was closed/destroyed, relaunching the script did nothing (it hit
--- this return before ever rebuilding the GUI) and threw no error.
-if shared.NoComment and shared.NoComment.__version then
-	local existing = shared.NoComment
-	if existing.Gui and existing.Gui.Parent then
-		return existing
-	end
-	-- Stale reference from a previous run whose GUI was destroyed: clear it
-	-- so the framework below rebuilds everything from scratch.
-	shared.NoComment = nil
-end
-
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
@@ -26,22 +12,32 @@ local ContextActionService = game:GetService("ContextActionService")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
-local Framework = {
-	__version = VERSION,
-	Name = FRAMEWORK_NAME,
-	Ready = false,
-	Windows = {},
-	Plugins = {},
-	Modules = {},
-	Controls = {},
-	Config = {},
-	Theme = {},
-	Signals = {},
-	RecentControls = {},
-	FavoriteControls = {},
-}
+local ReusingFramework = shared.NoComment
+	and shared.NoComment.__version
+	and shared.NoComment.Gui
+	and shared.NoComment.Gui.Parent == PlayerGui
 
-shared.NoComment = Framework
+local Framework
+
+if ReusingFramework then
+	Framework = shared.NoComment
+else
+	Framework = {
+		__version = VERSION,
+		Name = FRAMEWORK_NAME,
+		Ready = false,
+		Windows = {},
+		Plugins = {},
+		Modules = {},
+		Controls = {},
+		Config = {},
+		Theme = {},
+		Signals = {},
+		RecentControls = {},
+		FavoriteControls = {},
+	}
+
+	shared.NoComment = Framework
 
 --// Utility
 
@@ -75,18 +71,24 @@ function Util.New(className, props, children)
 	return inst
 end
 
-function Util.ClampToViewport(frame)
+function Util.ClampToViewport(frame, minVisible)
 	local camera = workspace.CurrentCamera
 	if not camera then return end
+
+	minVisible = minVisible or 48
 
 	local viewport = camera.ViewportSize
 	local pos = frame.AbsolutePosition
 	local size = frame.AbsoluteSize
 
-	local x = math.clamp(pos.X, 0, math.max(0, viewport.X - size.X))
-	local y = math.clamp(pos.Y, 0, math.max(0, viewport.Y - size.Y))
+	-- allow hanging off-screen as long as `minVisible` px stay reachable
+	local x = math.clamp(pos.X, minVisible - size.X, viewport.X - minVisible)
+	-- keep the header at/below the top edge so it stays draggable
+	local y = math.clamp(pos.Y, 0, viewport.Y - minVisible)
 
-	frame.Position = UDim2.fromOffset(x, y)
+	if x ~= pos.X or y ~= pos.Y then
+		frame.Position = UDim2.fromOffset(x, y)
+	end
 end
 
 function Util.Round(n, places)
@@ -2092,127 +2094,142 @@ Framework.Ready = true
 Framework.Signals.Ready = Framework.Signals.Ready or Signal.new()
 Framework.Signals.Ready:Fire(Framework)
 
-Startup()
+	Startup()
 
-task.delay(1.25, function()
-	Framework.Notify({
-		Title = "No comment",
-		Text = "Framework initialized. Press F1 for the command palette.",
-		Duration = 4,
-	})
-end)
+	task.delay(1.25, function()
+		Framework.Notify({
+			Title = "No comment",
+			Text = "Framework initialized. Press F1 for the command palette.",
+			Duration = 4,
+		})
+	end)
+end -- end of "if not ReusingFramework" fresh-build branch
 
---// Example starter window
--- Remove this block if you want a blank framework.
+--// Main menu window
+-- This runs on EVERY execution (fresh build or relaunch), not just inside
+-- the branch above. Framework.CreateWindow() is itself idempotent (it
+-- returns the existing window if "MainMenu" is still open), so this safely
+-- handles three cases:
+--   1. First ever run            -> window doesn't exist, gets created
+--   2. Relaunch after the window
+--      was closed (but GUI alive) -> window was destroyed, gets recreated
+--   3. Relaunch while the window
+--      was never closed          -> existing window returned as-is
+-- The `#demo.Tabs == 0` check stops the tabs/sections below from being
+-- re-added on top of an already-populated window (case 3), while still
+-- rebuilding them for a brand-new/recreated window (cases 1 and 2).
+-- Remove this whole block if you want a blank framework.
 
 local demo = Framework.CreateWindow({
-	Id = "Demo",
+	Id = "MainMenu",
 	Title = "No comment",
 	Size = UDim2.fromOffset(720, 480),
 })
 
-local home = demo:AddTab("Home")
-local intro = home:AddSection("Welcome")
+if #demo.Tabs == 0 then
+	local home = demo:AddTab("Home")
+	local intro = home:AddSection("Welcome")
 
-intro:AddParagraph(
-	"No comment",
-	"A modular LocalScript GUI framework with windows, tabs, sections, controls, themes, notifications, plugins, command palette, and runtime-safe shared API."
-)
+	intro:AddParagraph(
+		"No comment",
+		"A modular LocalScript GUI framework with windows, tabs, sections, controls, themes, notifications, plugins, command palette, and runtime-safe shared API."
+	)
 
-intro:AddButton({
-	Text = "Show notification",
-	Callback = function()
-		Framework.Notify({
-			Title = "Hello",
-			Text = "No comment is running.",
-		})
-	end,
-})
+	intro:AddButton({
+		Text = "Show notification",
+		Callback = function()
+			Framework.Notify({
+				Title = "Hello",
+				Text = "No comment is running.",
+			})
+		end,
+	})
 
-intro:AddToggle({
-	Text = "Example toggle",
-	Default = true,
-	Callback = function(value)
-		print("Toggle:", value)
-	end,
-})
+	intro:AddToggle({
+		Text = "Example toggle",
+		Default = true,
+		Callback = function(value)
+			print("Toggle:", value)
+		end,
+	})
 
-intro:AddSlider({
-	Text = "Example slider",
-	Min = 0,
-	Max = 100,
-	Default = 50,
-	Step = 5,
-	Callback = function(value)
-		print("Slider:", value)
-	end,
-})
+	intro:AddSlider({
+		Text = "Example slider",
+		Min = 0,
+		Max = 100,
+		Default = 50,
+		Step = 5,
+		Callback = function(value)
+			print("Slider:", value)
+		end,
+	})
 
-intro:AddDropdown({
-	Text = "Example dropdown",
-	Values = { "Alpha", "Beta", "Gamma" },
-	Default = "Alpha",
-	Callback = function(value)
-		print("Dropdown:", value)
-	end,
-})
+	intro:AddDropdown({
+		Text = "Example dropdown",
+		Values = { "Alpha", "Beta", "Gamma" },
+		Default = "Alpha",
+		Callback = function(value)
+			print("Dropdown:", value)
+		end,
+	})
 
-intro:AddTextbox({
-	Placeholder = "Type here...",
-	Callback = function(value)
-		print("Textbox:", value)
-	end,
-})
+	intro:AddTextbox({
+		Placeholder = "Type here...",
+		Callback = function(value)
+			print("Textbox:", value)
+		end,
+	})
 
-intro:AddColorPicker({
-	Text = "Accent color",
-	Default = Framework.Theme.Values.Accent,
-	Callback = function(color)
-		Framework.SetTheme({
-			Accent = color,
-		})
-	end,
-})
+	intro:AddColorPicker({
+		Text = "Accent color",
+		Default = Framework.Theme.Values.Accent,
+		Callback = function(color)
+			Framework.SetTheme({
+				Accent = color,
+			})
+		end,
+	})
 
-local tools = demo:AddTab("Tools")
-local actions = tools:AddSection("Actions")
+	local tools = demo:AddTab("Tools")
+	local actions = tools:AddSection("Actions")
 
-actions:AddButton({
-	Text = "Open Settings",
-	Callback = function()
-		Framework.CreateSettingsWindow()
-	end,
-})
+	actions:AddButton({
+		Text = "Open Settings",
+		Callback = function()
+			Framework.CreateSettingsWindow()
+		end,
+	})
 
-actions:AddButton({
-	Text = "Open Modal",
-	Callback = function()
-		Framework.Modal({
-			Title = "Modal dialog",
-			Text = "This is a modal dialog created by No comment.",
-		})
-	end,
-})
+	actions:AddButton({
+		Text = "Open Modal",
+		Callback = function()
+			Framework.Modal({
+				Title = "Modal dialog",
+				Text = "This is a modal dialog created by No comment.",
+			})
+		end,
+	})
 
-actions:AddButton({
-	Text = "Open Context Menu",
-	Callback = function()
-		local mouse = UserInputService:GetMouseLocation()
-		Framework.ContextMenu({
-			{
-				Text = "Notify",
-				Callback = function()
-					Framework.Notify({ Text = "Context menu action." })
-				end,
-			},
-			{
-				Text = "Settings",
-				Callback = function()
-					Framework.CreateSettingsWindow()
-				end,
-			},
-		}, mouse)
-	end,
-})
+	actions:AddButton({
+		Text = "Open Context Menu",
+		Callback = function()
+			local mouse = UserInputService:GetMouseLocation()
+			Framework.ContextMenu({
+				{
+					Text = "Notify",
+					Callback = function()
+						Framework.Notify({ Text = "Context menu action." })
+					end,
+				},
+				{
+					Text = "Settings",
+					Callback = function()
+						Framework.CreateSettingsWindow()
+					end,
+				},
+			}, mouse)
+		end,
+	})
+end
 
 return Framework
