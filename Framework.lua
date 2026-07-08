@@ -1,8 +1,18 @@
 local FRAMEWORK_NAME = "No comment"
 local VERSION = "1.0.0"
 
+-- Only reuse the cached framework if its GUI is still actually alive.
+-- Previously this returned the stale table unconditionally, so after the
+-- menu was closed/destroyed, relaunching the script did nothing (it hit
+-- this return before ever rebuilding the GUI) and threw no error.
 if shared.NoComment and shared.NoComment.__version then
-	return shared.NoComment
+	local existing = shared.NoComment
+	if existing.Gui and existing.Gui.Parent then
+		return existing
+	end
+	-- Stale reference from a previous run whose GUI was destroyed: clear it
+	-- so the framework below rebuilds everything from scratch.
+	shared.NoComment = nil
 end
 
 local Players = game:GetService("Players")
@@ -248,10 +258,8 @@ function Framework.SetTheme(nameOrTable)
 end
 
 local function ApplyCorner(parent, radius)
-	return Util.New("UICorner", {
-		CornerRadius = UDim.new(0, radius or 8),
-		Parent = parent,
-	})
+	-- Rounding disabled framework-wide: intentionally not creating a UICorner.
+	return nil
 end
 
 local function ApplyStroke(parent, color, thickness, transparency)
@@ -2063,6 +2071,22 @@ Framework.StateManager = {
 		return Framework.Config[key]
 	end,
 }
+
+function Framework.Destroy()
+	for _, win in pairs(table.clone(Framework.Windows)) do
+		win:Close()
+	end
+
+	if Framework.Gui then
+		Framework.Gui:Destroy()
+	end
+
+	if shared.NoComment == Framework then
+		shared.NoComment = nil
+	end
+end
+
+Framework.Unload = Framework.Destroy
 
 Framework.Ready = true
 Framework.Signals.Ready = Framework.Signals.Ready or Signal.new()
