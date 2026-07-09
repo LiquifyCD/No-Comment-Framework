@@ -2106,6 +2106,6 @@ Framework.Signals.Ready:Fire(Framework)
 end
 
 shared.Framework = Framework
-screenGui:SetAttribute("FrameworkReady", true)
+Framework.Gui:SetAttribute("FrameworkReady", true)
 return Framework
 
