@@ -1242,7 +1242,7 @@ function Framework.CreateWindow(opts)
 		ZIndex = nextZ,
 	})
 
-	ApplyCorner(frame, 14)
+	--ApplyCorner(frame, 14)
 	ApplyStroke(frame, theme.Stroke, 1, 0.2)
 
 	local shadow = Util.New("ImageLabel", {
