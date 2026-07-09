@@ -1762,6 +1762,8 @@ function Framework.Modal(opts)
 		ZIndex = 45000,
 	})
 
+	ApplyCorner(overlay, 10)
+
 	local modal = Util.New("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.5),
