@@ -2105,4 +2105,5 @@ Framework.Signals.Ready:Fire(Framework)
 	end)
 end
 
+shared.Framework = Framework
 return Framework
