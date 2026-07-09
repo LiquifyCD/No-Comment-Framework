@@ -2106,5 +2106,6 @@ Framework.Signals.Ready:Fire(Framework)
 end
 
 shared.Framework = Framework
-player.PlayerGui.NoCommentGui:SetAttribute("FrameworkReady", true)
+screenGui:SetAttribute("FrameworkReady", true)
 return Framework
+
