@@ -1377,6 +1377,7 @@ function Framework.CreateWindow(opts)
 		Position = UDim2.new(1, -4, 1, -4),
 		Size = UDim2.fromOffset(18, 18),
 		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
 		Text = "◢",
 		Font = Enum.Font.GothamBold,
 		TextColor3 = theme.MutedText,
@@ -1385,6 +1386,7 @@ function Framework.CreateWindow(opts)
 		Parent = frame,
 		ZIndex = frame.ZIndex + 5,
 	})
+	ApplyCorner(resizeHandle, 4)
 
 	local win = setmetatable({
 		Id = id,
