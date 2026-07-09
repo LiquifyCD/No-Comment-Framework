@@ -260,8 +260,10 @@ function Framework.SetTheme(nameOrTable)
 end
 
 local function ApplyCorner(parent, radius)
-	-- Rounding disabled framework-wide: intentionally not creating a UICorner.
-	return nil
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius or 8)
+	corner.Parent = parent
+	return corner
 end
 
 local function ApplyStroke(parent, color, thickness, transparency)
