@@ -1247,10 +1247,11 @@ function Framework.CreateWindow(opts)
 
 	local shadow = Util.New("ImageLabel", {
 		Name = "Shadow",
-		BackgroundTransparency = 1,
+		BackgroundTransparency = 0,
 		Image = "rbxassetid://1316045217",
 		ImageColor3 = Color3.new(0, 0, 0),
-		ImageTransparency = 0.55,
+		--ImageTransparency = 0.55,
+		ImageTransparency = 0,
 		ScaleType = Enum.ScaleType.Slice,
 		SliceCenter = Rect.new(10, 10, 118, 118),
 		Position = UDim2.fromOffset(-18, -18),
