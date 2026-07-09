@@ -1259,6 +1259,8 @@ function Framework.CreateWindow(opts)
 		Parent = frame,
 	})
 
+	ApplyCorner(shadow, 14)
+
 	local header = Util.New("Frame", {
 		Name = "Header",
 		Size = UDim2.new(1, 0, 0, 44),
