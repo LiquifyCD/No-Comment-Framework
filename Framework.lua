@@ -4,26 +4,73 @@ local VERSION = "1.0.0"
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
-local GuiService = game:GetService("GuiService")
 local ContextActionService = game:GetService("ContextActionService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
-local ReusingFramework = shared.NoComment
-	and shared.NoComment.__version
-	and shared.NoComment.Gui
-	and shared.NoComment.Gui.Parent == PlayerGui
+local function CheckFrameworkState(candidate)
+	if type(candidate) ~= "table" or candidate.Ready ~= true or candidate.__destroyed == true then
+		return false
+	end
+
+	local gui = candidate.Gui
+	return candidate.__version ~= nil
+		and candidate.__lifecycleVersion == 1
+		and typeof(gui) == "Instance"
+		and gui:IsA("ScreenGui")
+		and gui.Parent == PlayerGui
+		and candidate.Root == gui:FindFirstChild("Root")
+		and gui:GetAttribute("FrameworkReady") == true
+		and type(candidate.Windows) == "table"
+		and type(candidate.Controls) == "table"
+		and type(candidate.Plugins) == "table"
+		and type(candidate.Modules) == "table"
+		and type(candidate.CreateWindow) == "function"
+		and type(candidate.Notify) == "function"
+		and type(candidate.Destroy) == "function"
+		and type(candidate.WindowManager) == "table"
+		and type(candidate.WindowManager.GetWindow) == "function"
+		and type(candidate.InputManager) == "table"
+		and type(candidate.InputManager.Binds) == "table"
+		and type(candidate.PluginManager) == "table"
+		and type(candidate.PluginManager.Registered) == "table"
+		and type(candidate.ConfigManager) == "table"
+		and type(candidate.NotificationManager) == "table"
+		and type(candidate.SearchManager) == "table"
+		and type(candidate.Theme) == "table"
+		and type(candidate.Theme.Values) == "table"
+		and type(candidate.Signals) == "table"
+end
+
+local function IsUsableFramework(candidate)
+	local ok, usable = pcall(CheckFrameworkState, candidate)
+	return ok and usable == true
+end
+
+local cachedFramework = shared.NoComment
+local ReusingFramework = IsUsableFramework(cachedFramework)
 
 local Framework
 
 if ReusingFramework then
-	Framework = shared.NoComment
+	Framework = cachedFramework
 else
+	if cachedFramework ~= nil then
+		pcall(function()
+			if type(cachedFramework) == "table" and type(cachedFramework.Destroy) == "function" then
+				cachedFramework.Destroy()
+			end
+		end)
+		if shared.NoComment == cachedFramework then
+			shared.NoComment = nil
+		end
+	end
+
 	Framework = {
 		__version = VERSION,
+		__lifecycleVersion = 1,
 		Name = FRAMEWORK_NAME,
 		Ready = false,
 		Windows = {},
@@ -36,8 +83,6 @@ else
 		RecentControls = {},
 		FavoriteControls = {},
 	}
-
-	shared.NoComment = Framework
 
 --// Utility
 
@@ -135,7 +180,7 @@ function Signal.new()
 end
 
 function Signal:Connect(fn)
-	if self._destroyed then
+	if self._destroyed or type(fn) ~= "function" then
 		return { Disconnect = function() end }
 	end
 
@@ -145,7 +190,9 @@ function Signal:Connect(fn)
 	}
 
 	function connection:Disconnect()
+		if not self.Connected then return end
 		self.Connected = false
+		self._fn = nil
 	end
 
 	table.insert(self._connections, connection)
@@ -169,6 +216,12 @@ function Signal:Fire(...)
 			Util.SafeCall(conn._fn, ...)
 		end
 	end
+
+	for i = #self._connections, 1, -1 do
+		if not self._connections[i].Connected then
+			table.remove(self._connections, i)
+		end
+	end
 end
 
 function Signal:Destroy()
@@ -187,25 +240,30 @@ function Maid.new()
 	return setmetatable({ _tasks = {} }, Maid)
 end
 
-function Maid:Give(task)
-	table.insert(self._tasks, task)
-	return task
+function Maid:Give(cleanupTask)
+	table.insert(self._tasks, cleanupTask)
+	return cleanupTask
 end
 
 function Maid:Clean()
-	for _, task in ipairs(self._tasks) do
-		if typeof(task) == "RBXScriptConnection" then
-			task:Disconnect()
-		elseif typeof(task) == "Instance" then
-			task:Destroy()
-		elseif type(task) == "table" and task.Destroy then
-			task:Destroy()
-		elseif type(task) == "function" then
-			Util.SafeCall(task)
+	local tasks = self._tasks
+	self._tasks = {}
+
+	for _, cleanupTask in ipairs(tasks) do
+		if typeof(cleanupTask) == "RBXScriptConnection" then
+			cleanupTask:Disconnect()
+		elseif typeof(cleanupTask) == "Instance" then
+			cleanupTask:Destroy()
+		elseif typeof(cleanupTask) == "thread" then
+			pcall(task.cancel, cleanupTask)
+		elseif type(cleanupTask) == "table" and cleanupTask.Destroy then
+			cleanupTask:Destroy()
+		elseif type(cleanupTask) == "table" and cleanupTask.Disconnect then
+			cleanupTask:Disconnect()
+		elseif type(cleanupTask) == "function" then
+			Util.SafeCall(cleanupTask)
 		end
 	end
-
-	table.clear(self._tasks)
 end
 
 Framework.Maid = Maid
@@ -278,8 +336,11 @@ end
 
 --// Root GUI
 
-local old = PlayerGui:FindFirstChild("NoCommentGui")
-if old then old:Destroy() end
+for _, child in ipairs(PlayerGui:GetChildren()) do
+	if child.Name == "NoCommentGui" then
+		child:Destroy()
+	end
+end
 
 local ScreenGui = Util.New("ScreenGui", {
 	Name = "NoCommentGui",
@@ -298,6 +359,10 @@ local Root = Util.New("Frame", {
 	Size = UDim2.fromScale(1, 1),
 	Parent = ScreenGui,
 })
+
+Framework.Root = Root
+local FrameworkMaid = Maid.new()
+Framework._Maid = FrameworkMaid
 
 --// Animator
 
@@ -390,10 +455,13 @@ Util.New("UIListLayout", {
 
 local NotificationManager = {
 	Queue = {},
+	PendingTasks = {},
 }
 
 function NotificationManager.Notify(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
+	local duration = tonumber(opts.Duration) or 4
+	if duration < 0 then duration = 0 end
 
 	local theme = Framework.Theme.Values
 
@@ -450,7 +518,9 @@ function NotificationManager.Notify(opts)
 		BackgroundTransparency = 0.04,
 	})
 
-	task.delay(opts.Duration or 4, function()
+	local expiryTask
+	expiryTask = task.delay(duration, function()
+		NotificationManager.PendingTasks[expiryTask] = nil
 		if item.Parent then
 			local t = Animator.Tween(item, TweenInfo.new(0.2), {
 				BackgroundTransparency = 1,
@@ -461,12 +531,20 @@ function NotificationManager.Notify(opts)
 			end)
 		end
 	end)
+	NotificationManager.PendingTasks[expiryTask] = true
 
 	return item
 end
 
 Framework.Notify = NotificationManager.Notify
 Framework.NotificationManager = NotificationManager
+
+FrameworkMaid:Give(function()
+	for pendingTask in pairs(NotificationManager.PendingTasks) do
+		pcall(task.cancel, pendingTask)
+	end
+	table.clear(NotificationManager.PendingTasks)
+end)
 
 --// Control base
 
@@ -478,6 +556,20 @@ local function TrackControl(control)
 	end
 end
 
+local function UntrackControl(control)
+	for i = #Framework.Controls, 1, -1 do
+		if Framework.Controls[i] == control then
+			table.remove(Framework.Controls, i)
+		end
+	end
+	for i = #Framework.RecentControls, 1, -1 do
+		if Framework.RecentControls[i] == control then
+			table.remove(Framework.RecentControls, i)
+		end
+	end
+	Framework.FavoriteControls[control] = nil
+end
+
 local function CreateControlApi(frame, defaultValue)
 	local value = defaultValue
 	local changed = Signal.new()
@@ -486,6 +578,7 @@ local function CreateControlApi(frame, defaultValue)
 		Instance = frame,
 		Changed = changed,
 		Default = defaultValue,
+		Maid = Maid.new(),
 	}
 
 	function api:Get()
@@ -503,12 +596,24 @@ local function CreateControlApi(frame, defaultValue)
 		self:Set(defaultValue)
 	end
 
-	function api:Destroy()
+	local function cleanup()
+		if api._destroyed then return end
+		api._destroyed = true
+		api.Maid:Clean()
 		changed:Destroy()
-		if frame then frame:Destroy() end
+		UntrackControl(api)
+	end
+
+	function api:Destroy()
+		if self._destroyed then return end
+		cleanup()
+		if frame and frame.Parent then frame:Destroy() end
 	end
 
 	TrackControl(api)
+	api.Maid:Give(frame.Destroying:Connect(function()
+		cleanup()
+	end))
 	return api
 end
 
@@ -516,6 +621,34 @@ end
 
 local Section = {}
 Section.__index = Section
+
+local function GetControlById(section, opts)
+	local id = opts.Id
+	if id == nil or (type(id) == "number" and id ~= id) then return nil end
+	section.ControlsById = section.ControlsById or {}
+	local existing = section.ControlsById[id]
+	if type(existing) == "table"
+		and existing._destroyed ~= true
+		and typeof(existing.Instance) == "Instance"
+		and existing.Instance.Parent == section.Content then
+		return existing
+	end
+	section.ControlsById[id] = nil
+	return nil
+end
+
+local function RegisterControlId(section, opts, control)
+	local id = opts.Id
+	if id == nil or (type(id) == "number" and id ~= id) then return control end
+	section.ControlsById = section.ControlsById or {}
+	section.ControlsById[id] = control
+	control.Maid:Give(function()
+		if section.ControlsById[id] == control then
+			section.ControlsById[id] = nil
+		end
+	end)
+	return control
+end
 
 function Section:AddLabel(text)
 	local theme = Framework.Theme.Values
@@ -586,7 +719,9 @@ function Section:AddDivider()
 end
 
 function Section:AddButton(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
+	local existing = GetControlById(self, opts)
+	if existing then return existing end
 	local theme = Framework.Theme.Values
 
 	local button = Util.New("TextButton", {
@@ -615,11 +750,13 @@ function Section:AddButton(opts)
 		Util.SafeCall(opts.Callback)
 	end)
 
-	return CreateControlApi(button, false)
+	return RegisterControlId(self, opts, CreateControlApi(button, false))
 end
 
 function Section:AddToggle(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
+	local existing = GetControlById(self, opts)
+	if existing then return existing end
 	local theme = Framework.Theme.Values
 
 	local frame = Util.New("Frame", {
@@ -685,16 +822,19 @@ function Section:AddToggle(opts)
 
 	render(api:Get())
 
-	return api
+	return RegisterControlId(self, opts, api)
 end
 
 function Section:AddSlider(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
+	local existing = GetControlById(self, opts)
+	if existing then return existing end
 	local theme = Framework.Theme.Values
 
-	local min = opts.Min or 0
-	local max = opts.Max or 100
-	local default = math.clamp(opts.Default or min, min, max)
+	local min = tonumber(opts.Min) or 0
+	local max = tonumber(opts.Max) or 100
+	if max < min then min, max = max, min end
+	local default = math.clamp(tonumber(opts.Default) or min, min, max)
 
 	local frame = Util.New("Frame", {
 		Size = UDim2.new(1, 0, 0, 54),
@@ -746,7 +886,7 @@ function Section:AddSlider(opts)
 	local dragging = false
 
 	local function render(v)
-		local alpha = (v - min) / (max - min)
+		local alpha = max == min and 0 or (v - min) / (max - min)
 		fill.Size = UDim2.fromScale(math.clamp(alpha, 0, 1), 1)
 		valueLabel.Text = tostring(Util.Round(v, opts.Precision or 0))
 	end
@@ -754,7 +894,8 @@ function Section:AddSlider(opts)
 	local function setFromX(x)
 		local alpha = math.clamp((x - bar.AbsolutePosition.X) / math.max(1, bar.AbsoluteSize.X), 0, 1)
 		local raw = min + (max - min) * alpha
-		local step = opts.Step or 1
+		local step = math.abs(tonumber(opts.Step) or 1)
+		if step == 0 then step = 1 end
 		local val = math.clamp(math.round(raw / step) * step, min, max)
 		api:Set(val)
 	end
@@ -767,31 +908,33 @@ function Section:AddSlider(opts)
 		Util.SafeCall(opts.Callback, v)
 	end
 
-	bar.InputBegan:Connect(function(input)
+	api.Maid:Give(bar.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			setFromX(input.Position.X)
 		end
-	end)
+	end))
 
-	UserInputService.InputEnded:Connect(function(input)
+	api.Maid:Give(UserInputService.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = false
 		end
-	end)
+	end))
 
-	UserInputService.InputChanged:Connect(function(input)
+	api.Maid:Give(UserInputService.InputChanged:Connect(function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 			setFromX(input.Position.X)
 		end
-	end)
+	end))
 
 	render(default)
-	return api
+	return RegisterControlId(self, opts, api)
 end
 
 function Section:AddTextbox(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
+	local existing = GetControlById(self, opts)
+	if existing then return existing end
 	local theme = Framework.Theme.Values
 
 	local box = Util.New("TextBox", {
@@ -824,11 +967,13 @@ function Section:AddTextbox(opts)
 		api:Set(box.Text)
 	end)
 
-	return api
+	return RegisterControlId(self, opts, api)
 end
 
 function Section:AddDropdown(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
+	local existing = GetControlById(self, opts)
+	if existing then return existing end
 	local theme = Framework.Theme.Values
 	local values = opts.Values or opts.Options or {}
 
@@ -867,7 +1012,10 @@ function Section:AddDropdown(opts)
 	end
 
 	button.Activated:Connect(function()
-		if popup then close() return end
+		if popup then
+			close()
+			return
+		end
 
 		popup = Util.New("Frame", {
 			Name = "DropdownPopup",
@@ -913,11 +1061,15 @@ function Section:AddDropdown(opts)
 		Util.SafeCall(opts.Callback, v)
 	end
 
-	return api
+	api.Maid:Give(close)
+
+	return RegisterControlId(self, opts, api)
 end
 
 function Section:AddProgress(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
+	local existing = GetControlById(self, opts)
+	if existing then return existing end
 	local theme = Framework.Theme.Values
 
 	local frame = Util.New("Frame", {
@@ -954,21 +1106,23 @@ function Section:AddProgress(opts)
 		})
 	end
 
-	return api
+	return RegisterControlId(self, opts, api)
 end
 
 function Section:AddCheckbox(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
 	return self:AddToggle(opts)
 end
 
 function Section:AddRadio(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
 	return self:AddDropdown(opts)
 end
 
 function Section:AddBadge(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
+	local existing = GetControlById(self, opts)
+	if existing then return existing end
 	local theme = Framework.Theme.Values
 
 	local label = Util.New("TextLabel", {
@@ -983,11 +1137,13 @@ function Section:AddBadge(opts)
 	})
 
 	ApplyCorner(label, 999)
-	return CreateControlApi(label, opts.Text)
+	return RegisterControlId(self, opts, CreateControlApi(label, opts.Text))
 end
 
 function Section:AddColorPicker(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
+	local existing = GetControlById(self, opts)
+	if existing then return existing end
 	local theme = Framework.Theme.Values
 
 	local current = opts.Default or theme.Accent
@@ -1033,7 +1189,7 @@ function Section:AddColorPicker(opts)
 		api:Set(current)
 	end)
 
-	return api
+	return RegisterControlId(self, opts, api)
 end
 
 -- aliases / simple implementations
@@ -1051,6 +1207,17 @@ local Tab = {}
 Tab.__index = Tab
 
 function Tab:AddSection(title)
+	local sectionKey = title == nil and "Section" or title
+	if type(sectionKey) == "number" and sectionKey ~= sectionKey then
+		sectionKey = "Section"
+	end
+	self.SectionsByTitle = self.SectionsByTitle or {}
+	local existing = self.SectionsByTitle[sectionKey]
+	if type(existing) == "table" and typeof(existing.Frame) == "Instance" and existing.Frame.Parent == self.Content then
+		return existing
+	end
+	self.SectionsByTitle[sectionKey] = nil
+
 	local theme = Framework.Theme.Values
 
 	local sectionFrame = Util.New("Frame", {
@@ -1094,9 +1261,22 @@ function Tab:AddSection(title)
 		Frame = sectionFrame,
 		Content = sectionFrame,
 		Title = title,
+		ControlsById = {},
 	}, Section)
 
 	table.insert(self.Sections, section)
+	self.SectionsByTitle[sectionKey] = section
+	sectionFrame.Destroying:Connect(function()
+		if self.SectionsByTitle[sectionKey] == section then
+			self.SectionsByTitle[sectionKey] = nil
+		end
+		for i = #self.Sections, 1, -1 do
+			if self.Sections[i] == section then
+				table.remove(self.Sections, i)
+				break
+			end
+		end
+	end)
 	return section
 end
 
@@ -1107,6 +1287,23 @@ Window.__index = Window
 
 local nextZ = 20
 
+local function IsLiveWindow(win)
+	return type(win) == "table"
+		and win._closed ~= true
+		and typeof(win.Frame) == "Instance"
+		and win.Frame.Parent == Root
+		and typeof(win.Body) == "Instance"
+		and typeof(win.TabHost) == "Instance"
+end
+
+local function WindowCount()
+	local count = 0
+	for _, win in pairs(Framework.Windows) do
+		if IsLiveWindow(win) then count += 1 end
+	end
+	return count
+end
+
 local function focusWindow(win)
 	nextZ += 1
 	win.Frame.ZIndex = nextZ
@@ -1115,6 +1312,21 @@ local function focusWindow(win)
 end
 
 function Window:AddTab(title)
+	local tabKey = title == nil and "Tab" or title
+	if type(tabKey) == "number" and tabKey ~= tabKey then
+		tabKey = "Tab"
+	end
+	self.TabsByTitle = self.TabsByTitle or {}
+	local existing = self.TabsByTitle[tabKey]
+	if type(existing) == "table"
+		and typeof(existing.Content) == "Instance"
+		and existing.Content.Parent == self.TabHost
+		and typeof(existing.Button) == "Instance"
+		and existing.Button.Parent == self.Sidebar then
+		return existing
+	end
+	self.TabsByTitle[tabKey] = nil
+
 	local theme = Framework.Theme.Values
 
 	local tabButton = Util.New("TextButton", {
@@ -1165,6 +1377,21 @@ function Window:AddTab(title)
 	}, Tab)
 
 	table.insert(self.Tabs, tab)
+	self.TabsByTitle[tabKey] = tab
+	scroll.Destroying:Connect(function()
+		if self.TabsByTitle[tabKey] == tab then
+			self.TabsByTitle[tabKey] = nil
+		end
+		for i = #self.Tabs, 1, -1 do
+			if self.Tabs[i] == tab then
+				table.remove(self.Tabs, i)
+				break
+			end
+		end
+		if self.ActiveTab == tab then
+			self.ActiveTab = nil
+		end
+	end)
 
 	local function selectTab()
 		for _, t in ipairs(self.Tabs) do
@@ -1214,27 +1441,41 @@ function Window:Maximize()
 end
 
 function Window:Close()
+	if self._closed then return end
+	self._closed = true
+	if Framework.Windows[self.Id] == self then
+		Framework.Windows[self.Id] = nil
+	end
 	self.Maid:Clean()
-	self.Frame:Destroy()
-	Framework.Windows[self.Id] = nil
+	if self.Frame and self.Frame.Parent then
+		self.Frame:Destroy()
+	end
 end
 
 function Framework.CreateWindow(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
 	local theme = Framework.Theme.Values
 
 	local id = opts.Id or HttpService:GenerateGUID(false)
 
-	if Framework.Windows[id] then
-	
-		return Framework.Windows[id]
+	local existing = Framework.Windows[id]
+	if IsLiveWindow(existing) then
+		existing.Frame.Visible = true
+		focusWindow(existing)
+		return existing
+	elseif existing then
+		if type(existing) == "table" and type(existing.Close) == "function" then
+			existing:Close()
+		else
+			Framework.Windows[id] = nil
+		end
 	end
 
 	local maid = Maid.new()
 
 	local frame = Util.New("Frame", {
 		Name = "Window_" .. tostring(id),
-		Position = opts.Position or UDim2.fromOffset(120 + (#Framework.Windows * 24), 100 + (#Framework.Windows * 24)),
+		Position = opts.Position or UDim2.fromOffset(120 + (WindowCount() * 24), 100 + (WindowCount() * 24)),
 		Size = opts.Size or UDim2.fromOffset(680, 460),
 		BackgroundColor3 = theme.Background,
 		ClipsDescendants = true,
@@ -1399,6 +1640,7 @@ function Framework.CreateWindow(opts)
 		TabHost = tabHost,
 		ResizeHandle = resizeHandle,
 		Tabs = {},
+		TabsByTitle = {},
 		ActiveTab = nil,
 		Maid = maid,
 		Minimized = false,
@@ -1407,6 +1649,15 @@ function Framework.CreateWindow(opts)
 	}, Window)
 
 	Framework.Windows[id] = win
+	maid:Give(frame.Destroying:Connect(function()
+		if not win._closed then
+			win._closed = true
+			if Framework.Windows[id] == win then
+				Framework.Windows[id] = nil
+			end
+			maid:Clean()
+		end
+	end))
 
 	-- dragging
 	local dragging = false
@@ -1691,15 +1942,15 @@ function SearchManager.Hide()
 	searchBox:ReleaseFocus()
 end
 
-searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+FrameworkMaid:Give(searchBox:GetPropertyChangedSignal("Text"):Connect(function()
 	SearchManager.Refresh(searchBox.Text)
-end)
+end))
 
-paletteOverlay.InputBegan:Connect(function(input)
+FrameworkMaid:Give(paletteOverlay.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 and input.Target == paletteOverlay then
 		SearchManager.Hide()
 	end
-end)
+end))
 
 Framework.SearchManager = SearchManager
 Framework.CommandPalette = SearchManager
@@ -1707,6 +1958,8 @@ Framework.CommandPalette = SearchManager
 --// Context Menus / Modals
 
 function Framework.ContextMenu(items, position)
+	items = type(items) == "table" and items or {}
+	position = typeof(position) == "Vector2" and position or Vector2.zero
 	local theme = Framework.Theme.Values
 
 	local menu = Util.New("Frame", {
@@ -1753,7 +2006,7 @@ function Framework.ContextMenu(items, position)
 end
 
 function Framework.Modal(opts)
-	opts = opts or {}
+	opts = type(opts) == "table" and opts or {}
 	local theme = Framework.Theme.Values
 
 	local overlay = Util.New("Frame", {
@@ -1844,6 +2097,7 @@ function PluginManager.Register(name, plugin)
 	end
 
 	PluginManager.Registered[name] = plugin
+	Framework.Plugins[name] = plugin
 
 	if type(plugin) == "table" and type(plugin.Init) == "function" then
 		Util.SafeCall(plugin.Init, Framework)
@@ -1889,6 +2143,11 @@ local InputManager = {
 }
 
 function InputManager.Bind(actionName, keyCode, callback)
+	if type(actionName) ~= "string" or actionName == "" or typeof(keyCode) ~= "EnumItem" or type(callback) ~= "function" then
+		warn("[No comment]: invalid input binding")
+		return nil
+	end
+
 	if InputManager.Binds[actionName] then
 		ContextActionService:UnbindAction(actionName)
 	end
@@ -1903,6 +2162,7 @@ function InputManager.Bind(actionName, keyCode, callback)
 			Util.SafeCall(callback)
 		end
 	end, false, keyCode)
+	return nil
 end
 
 function InputManager.Unbind(actionName)
@@ -1929,6 +2189,13 @@ end)
 --// Settings page
 
 function Framework.CreateSettingsWindow()
+	local existing = Framework.Windows.NoCommentSettings
+	if IsLiveWindow(existing) then
+		existing.Frame.Visible = true
+		focusWindow(existing)
+		return existing
+	end
+
 	local win = Framework.CreateWindow({
 		Id = "NoCommentSettings",
 		Title = "No comment Settings",
@@ -2027,7 +2294,8 @@ local function Startup()
 		Size = UDim2.fromOffset(220, 4),
 	})
 
-	task.delay(1.05, function()
+	FrameworkMaid:Give(task.delay(1.05, function()
+		if Framework.__destroyed or not splash.Parent then return end
 		local t1 = Animator.Tween(logo, TweenInfo.new(0.25), {
 			TextTransparency = 1,
 			Position = UDim2.fromScale(0.5, 0.45),
@@ -2042,7 +2310,7 @@ local function Startup()
 				splash:Destroy()
 			end
 		end)
-	end)
+	end))
 end
 
 --// Public aliases
@@ -2050,7 +2318,10 @@ end
 Framework.WindowManager = {
 	CreateWindow = Framework.CreateWindow,
 	GetWindow = function(id)
-		return Framework.Windows[id]
+		local win = Framework.Windows[id]
+		if IsLiveWindow(win) then return win end
+		if win ~= nil then Framework.Windows[id] = nil end
+		return nil
 	end,
 	CloseAll = function()
 		for _, win in pairs(table.clone(Framework.Windows)) do
@@ -2083,38 +2354,88 @@ Framework.StateManager = {
 	end,
 }
 
+local GuiIsDestroying = false
+
 function Framework.Destroy()
+	if Framework.__destroyed then return end
+	Framework.__destroyed = true
+	Framework.Ready = false
+
 	for _, win in pairs(table.clone(Framework.Windows)) do
-		win:Close()
+		if type(win) == "table" and type(win.Close) == "function" then
+			win:Close()
+		end
+	end
+	table.clear(Framework.Windows)
+	for actionName in pairs(table.clone(InputManager.Binds)) do
+		InputManager.Unbind(actionName)
+	end
+	FrameworkMaid:Clean()
+	ConfigManager.Changed:Destroy()
+	Framework.Theme.Changed:Destroy()
+	for _, signal in pairs(Framework.Signals) do
+		if type(signal) == "table" and type(signal.Destroy) == "function" then
+			signal:Destroy()
+		end
 	end
 
-	if Framework.Gui then
+	if not GuiIsDestroying and Framework.Gui and Framework.Gui.Parent then
 		Framework.Gui:Destroy()
 	end
 
 	if shared.NoComment == Framework then
 		shared.NoComment = nil
 	end
+	if shared.Framework == Framework then
+		shared.Framework = nil
+	end
 end
 
 Framework.Unload = Framework.Destroy
 
-Framework.Ready = true
 Framework.Signals.Ready = Framework.Signals.Ready or Signal.new()
-Framework.Signals.Ready:Fire(Framework)
 
 	Startup()
+	Framework.Gui:SetAttribute("FrameworkReady", true)
+	Framework.Ready = true
+	shared.NoComment = Framework
+	shared.Framework = Framework
+	Framework.Signals.Ready:Fire(Framework)
 
-	task.delay(1.25, function()
+	local invalidationScheduled = false
+	local function InvalidateFramework()
+		if Framework.__destroyed then return end
+		Framework.Ready = false
+		if shared.NoComment == Framework then shared.NoComment = nil end
+		if shared.Framework == Framework then shared.Framework = nil end
+		if invalidationScheduled then return end
+		invalidationScheduled = true
+		task.defer(function()
+			Framework.Destroy()
+		end)
+	end
+
+	FrameworkMaid:Give(Framework.Gui.Destroying:Connect(function()
+		GuiIsDestroying = true
+		Framework.Destroy()
+	end))
+	FrameworkMaid:Give(Framework.Gui:GetPropertyChangedSignal("Parent"):Connect(function()
+		if Framework.Gui.Parent ~= PlayerGui then
+			InvalidateFramework()
+		end
+	end))
+	FrameworkMaid:Give(Root.Destroying:Connect(InvalidateFramework))
+
+	FrameworkMaid:Give(task.delay(1.25, function()
+		if Framework.__destroyed then return end
 		Framework.Notify({
 			Title = "No comment",
 			Text = "Framework initialized. Press F1 for the command palette.",
 			Duration = 4,
 		})
-	end)
+	end))
 end
 
 shared.Framework = Framework
-Framework.Gui:SetAttribute("FrameworkReady", true)
 return Framework
 
