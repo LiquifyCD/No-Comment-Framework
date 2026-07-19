@@ -8,7 +8,7 @@ local HttpService = game:GetService("HttpService")
 local ContextActionService = game:GetService("ContextActionService")
 
 local LocalPlayer = Players.LocalPlayer
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local CoreGui = game:GetService("CoreGui")
 
 local function CheckFrameworkState(candidate)
 	if type(candidate) ~= "table" or candidate.Ready ~= true or candidate.__destroyed == true then
@@ -20,7 +20,7 @@ local function CheckFrameworkState(candidate)
 		and candidate.__lifecycleVersion == 1
 		and typeof(gui) == "Instance"
 		and gui:IsA("ScreenGui")
-		and gui.Parent == PlayerGui
+		and gui.Parent == CoreGui
 		and candidate.Root == gui:FindFirstChild("Root")
 		and gui:GetAttribute("FrameworkReady") == true
 		and type(candidate.Windows) == "table"
@@ -336,7 +336,7 @@ end
 
 --// Root GUI
 
-for _, child in ipairs(PlayerGui:GetChildren()) do
+for _, child in ipairs(CoreGui:GetChildren()) do
 	if child.Name == "NoCommentGui" then
 		child:Destroy()
 	end
@@ -348,7 +348,7 @@ local ScreenGui = Util.New("ScreenGui", {
 	ResetOnSpawn = false,
 	DisplayOrder = 2147483000,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-	Parent = PlayerGui,
+	Parent = CoreGui,
 })
 
 Framework.Gui = ScreenGui
@@ -2420,7 +2420,7 @@ Framework.Signals.Ready = Framework.Signals.Ready or Signal.new()
 		Framework.Destroy()
 	end))
 	FrameworkMaid:Give(Framework.Gui:GetPropertyChangedSignal("Parent"):Connect(function()
-		if Framework.Gui.Parent ~= PlayerGui then
+		if Framework.Gui.Parent ~= CoreGui then
 			InvalidateFramework()
 		end
 	end))
